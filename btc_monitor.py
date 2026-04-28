@@ -16,69 +16,119 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # ==================== 配置 ====================
-BINANCE_API_URL = "https://api.binance.com"
+# 多个API备用，避免单一API被墙
+API_SOURCES = [
+    {"name": "Binance", "base": "https://api.binance.com", "kline": "/api/v3/klines", "ticker": "/api/v3/ticker/24hr"},
+    {"name": "Binance2", "base": "https://api1.binance.com", "kline": "/api/v3/klines", "ticker": "/api/v3/ticker/24hr"},
+    {"name": "Binance3", "base": "https://data-api.binance.vision", "kline": "/api/v3/klines", "ticker": "/api/v3/ticker/24hr"},
+]
 SERVERCHAN_API = "https://sctapi.ftqq.com"
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept": "application/json",
+}
 
 # ==================== 数据获取 ====================
 
 def get_btc_price() -> Dict:
-    """获取BTC当前价格"""
+    """获取BTC当前价格，自动尝试多个API源"""
+    for source in API_SOURCES:
+        try:
+            url = f"{source['base']}{source['ticker']}"
+            response = requests.get(
+                url,
+                params={"symbol": "BTCUSDT"},
+                headers=HEADERS,
+                timeout=10
+            )
+            data = response.json()
+            if "lastPrice" in data:
+                print(f"  数据源: {source['name']}")
+                return {
+                    "price": float(data["lastPrice"]),
+                    "change_24h": float(data["priceChange"]),
+                    "change_percent": float(data["priceChangePercent"]),
+                    "high_24h": float(data["highPrice"]),
+                    "low_24h": float(data["lowPrice"]),
+                    "volume": float(data["volume"]),
+                    "quote_volume": float(data["quoteVolume"])
+                }
+            else:
+                print(f"  {source['name']} 返回异常: {data.get('msg', data.get('code', 'unknown'))}")
+        except Exception as e:
+            print(f"  {source['name']} 请求失败: {e}")
+    
+    # 所有Binance API都失败，尝试CoinGecko备用
     try:
-        response = requests.get(
-            f"{BINANCE_API_URL}/api/v3/ticker/24hr",
-            params={"symbol": "BTCUSDT"},
-            timeout=10
-        )
-        data = response.json()
-        return {
-            "price": float(data["lastPrice"]),
-            "change_24h": float(data["priceChange"]),
-            "change_percent": float(data["priceChangePercent"]),
-            "high_24h": float(data["highPrice"]),
-            "low_24h": float(data["lowPrice"]),
-            "volume": float(data["volume"]),
-            "quote_volume": float(data["quoteVolume"])
-        }
+        print("  尝试CoinGecko备用源...")
+        cg_url = "https://api.coingecko.com/api/v3/simple/price"
+        response = requests.get(cg_url, params={"ids": "bitcoin", "vs_currencies": "usdt", "include_24hr_change": "true", "include_24hr_vol": "true"}, headers=HEADERS, timeout=10)
+        data = response.json().get("bitcoin", {})
+        if data:
+            price = data.get("usdt", 0)
+            change = data.get("usdt_24h_change", 0)
+            vol = data.get("usdt_24h_vol", 0)
+            return {
+                "price": price,
+                "change_24h": price * change / 100 if change else 0,
+                "change_percent": change if change else 0,
+                "high_24h": 0,
+                "low_24h": 0,
+                "volume": 0,
+                "quote_volume": vol
+            }
     except Exception as e:
-        print(f"获取BTC价格失败: {e}")
-        return {}
+        print(f"  CoinGecko 也失败: {e}")
+    
+    print("获取BTC价格失败: 所有数据源均不可用")
+    return {}
 
 def get_kline_data(interval: str = "1d", limit: int = 30) -> pd.DataFrame:
-    """获取K线数据
+    """获取K线数据，自动尝试多个API源
     
     Args:
         interval: K线周期 (1m, 5m, 15m, 1h, 4h, 1d, 1w)
         limit: 获取条数
     """
-    try:
-        response = requests.get(
-            f"{BINANCE_API_URL}/api/v3/klines",
-            params={
-                "symbol": "BTCUSDT",
-                "interval": interval,
-                "limit": limit
-            },
-            timeout=10
-        )
-        data = response.json()
-        
-        df = pd.DataFrame(data, columns=[
-            'timestamp', 'open', 'high', 'low', 'close', 'volume',
-            'close_time', 'quote_volume', 'trades', 'taker_buy_volume',
-            'taker_buy_quote_volume', 'ignore'
-        ])
-        
-        # 转换数据类型
-        for col in ['open', 'high', 'low', 'close', 'volume']:
-            df[col] = df[col].astype(float)
-        
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        df.set_index('timestamp', inplace=True)
-        
-        return df[['open', 'high', 'low', 'close', 'volume']]
-    except Exception as e:
-        print(f"获取K线数据失败: {e}")
-        return pd.DataFrame()
+    for source in API_SOURCES:
+        try:
+            url = f"{source['base']}{source['kline']}"
+            response = requests.get(
+                url,
+                params={
+                    "symbol": "BTCUSDT",
+                    "interval": interval,
+                    "limit": limit
+                },
+                headers=HEADERS,
+                timeout=10
+            )
+            data = response.json()
+            
+            # 检查返回的是否是有效K线数据
+            if isinstance(data, list) and len(data) > 0 and isinstance(data[0], list):
+                df = pd.DataFrame(data, columns=[
+                    'timestamp', 'open', 'high', 'low', 'close', 'volume',
+                    'close_time', 'quote_volume', 'trades', 'taker_buy_volume',
+                    'taker_buy_quote_volume', 'ignore'
+                ])
+                
+                for col in ['open', 'high', 'low', 'close', 'volume']:
+                    df[col] = df[col].astype(float)
+                
+                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                df.set_index('timestamp', inplace=True)
+                
+                print(f"  K线数据源: {source['name']}")
+                return df[['open', 'high', 'low', 'close', 'volume']]
+            else:
+                print(f"  {source['name']} K线返回异常")
+        except Exception as e:
+            print(f"  {source['name']} K线请求失败: {e}")
+    
+    print("获取K线数据失败: 所有数据源均不可用")
+    return pd.DataFrame()
 
 # ==================== 技术分析 ====================
 
