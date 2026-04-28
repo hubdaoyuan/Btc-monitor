@@ -28,5 +28,4 @@ jobs:
         pip install requests pandas numpy matplotlib
         
     - name: Run BTC Monitor
-      run: |
-        python btc_monitor.py
+      run: python btc_monitor.py
