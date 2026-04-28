@@ -255,59 +255,98 @@ def calculate_fear_greed_index(price_data: pd.DataFrame) -> Dict:
 # ==================== 图表生成 ====================
 
 def generate_kline_chart(df: pd.DataFrame, output_path: str = "btc_kline.png"):
-    """生成K线图"""
+    """生成暗色主题专业K线图（含MA均线 + 成交量副图）"""
     try:
+        import matplotlib
+        matplotlib.use('Agg')
         import matplotlib.pyplot as plt
-        import matplotlib.dates as mdates
-        from matplotlib.patches import Rectangle
+        import matplotlib.font_manager as fm
+        import matplotlib.gridspec as gridspec
         
-        fig, axes = plt.subplots(2, 1, figsize=(14, 10), gridspec_kw={'height_ratios': [3, 1]})
-        ax1, ax2 = axes
+        # 中文字体支持
+        cjk_fonts = [f for f in fm.findSystemFonts() if 'NotoSansCJK' in f and 'Regular' in f]
+        if cjk_fonts:
+            font_prop = fm.FontProperties(fname=cjk_fonts[0])
+            plt.rcParams.update({
+                'font.family': font_prop.get_name(),
+                'axes.unicode_minus': False,
+            })
+        else:
+            plt.rcParams.update({'axes.unicode_minus': False})
         
-        # 绘制K线
-        for i, (idx, row) in enumerate(df.iterrows()):
-            color = '#26a69a' if row['close'] >= row['open'] else '#ef5350'
-            
-            # 实体
-            height = abs(row['close'] - row['open'])
-            bottom = min(row['close'], row['open'])
-            rect = Rectangle((i - 0.4, bottom), 0.8, height, 
-                           facecolor=color, edgecolor=color, linewidth=1)
-            ax1.add_patch(rect)
-            
-            # 影线
-            ax1.plot([i, i], [row['low'], row['high']], color=color, linewidth=1)
+        fig = plt.figure(figsize=(14, 8), facecolor='#1a1a2e')
+        gs = gridspec.GridSpec(2, 1, height_ratios=[3, 1], hspace=0.05)
         
-        # 添加移动平均线
-        if len(df) >= 7:
-            ma7 = calculate_sma(df['close'], 7)
-            ax1.plot(range(len(df)), ma7, color='#ff9800', linewidth=1.5, label='MA7')
+        ax_price = fig.add_subplot(gs[0])
+        ax_vol = fig.add_subplot(gs[1])
         
-        if len(df) >= 20:
-            ma20 = calculate_sma(df['close'], 20)
-            ax1.plot(range(len(df)), ma20, color='#2196f3', linewidth=1.5, label='MA20')
+        # 暗色主题样式
+        for ax in [ax_price, ax_vol]:
+            ax.set_facecolor('#16213e')
+            ax.tick_params(colors='#a0a0a0', labelsize=8)
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            ax.spines['bottom'].set_color('#333')
+            ax.spines['left'].set_color('#333')
         
-        # 设置K线图表
-        ax1.set_title('BTC/USDT K线图', fontsize=16, fontweight='bold')
-        ax1.set_ylabel('价格 (USDT)', fontsize=12)
-        ax1.legend(loc='upper left')
-        ax1.grid(True, alpha=0.3)
-        ax1.set_xticks(range(0, len(df), 5))
-        ax1.set_xticklabels([d.strftime('%m-%d') for d in df.index[::5]], rotation=45)
-        
-        # 绘制成交量
-        colors = ['#26a69a' if df['close'].iloc[i] >= df['open'].iloc[i] else '#ef5350' 
+        # 涨跌颜色
+        colors = ['#26a69a' if df['close'].iloc[i] >= df['open'].iloc[i] else '#ef5350'
                   for i in range(len(df))]
-        ax2.bar(range(len(df)), df['volume'], color=colors, alpha=0.7)
-        ax2.set_ylabel('成交量', fontsize=12)
-        ax2.set_xlabel('日期', fontsize=12)
-        ax2.grid(True, alpha=0.3)
-        ax2.set_xticks(range(0, len(df), 5))
-        ax2.set_xticklabels([d.strftime('%m-%d') for d in df.index[::5]], rotation=45)
         
-        plt.tight_layout()
-        plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='white')
-        plt.close()
+        bar_width = 0.6
+        
+        # ---- K线蜡烛 ----
+        for i in range(len(df)):
+            row = df.iloc[i]
+            body_bottom = min(row['open'], row['close'])
+            body_height = abs(row['close'] - row['open'])
+            if body_height < 1:
+                body_height = (row['high'] - row['low']) * 0.02
+            ax_price.bar(i, body_height, bottom=body_bottom,
+                         width=bar_width, color=colors[i], edgecolor=colors[i])
+            ax_price.vlines(i, row['low'], row['high'], color=colors[i], linewidth=0.8)
+        
+        # ---- MA均线 ----
+        ma_configs = [(5, '#ffd700', 'MA5'), (10, '#ff6b6b', 'MA10'), (20, '#4ecdc4', 'MA20')]
+        for period, color, label in ma_configs:
+            if len(df) >= period:
+                ma = df['close'].rolling(period).mean()
+                ax_price.plot(range(len(df)), ma, color=color, linewidth=1, label=label, alpha=0.8)
+        
+        ax_price.legend(loc='upper left', fontsize=8, facecolor='#16213e',
+                        edgecolor='#333', labelcolor='#a0a0a0')
+        
+        # 标题（含价格涨跌）
+        last_close = df['close'].iloc[-1]
+        prev_close = df['close'].iloc[-2] if len(df) > 1 else df['open'].iloc[-1]
+        change_pct = (last_close - prev_close) / prev_close * 100
+        title = f"BTC/USDT Daily | ${last_close:,.0f} ({change_pct:+.2f}%)"
+        ax_price.set_title(title, color='#e0e0e0', fontsize=13, fontweight='bold', pad=10)
+        
+        # X轴日期
+        step = max(1, len(df) // 8)
+        tick_positions = list(range(0, len(df), step))
+        tick_labels = [d.strftime('%m/%d') for d in df.index[tick_positions]]
+        ax_price.set_xticks(tick_positions)
+        ax_price.set_xticklabels(tick_labels)
+        ax_price.set_ylabel('Price (USDT)', color='#a0a0a0', fontsize=9)
+        
+        # ---- 成交量副图 ----
+        for i in range(len(df)):
+            ax_vol.bar(i, df['volume'].iloc[i], width=bar_width,
+                       color=colors[i], alpha=0.6)
+        
+        ax_vol.set_ylabel('Volume', color='#a0a0a0', fontsize=9)
+        ax_vol.set_xticks(tick_positions)
+        ax_vol.set_xticklabels(tick_labels)
+        
+        # 日期范围
+        date_range = f"{df.index[0].strftime('%Y-%m-%d')} ~ {df.index[-1].strftime('%Y-%m-%d')}"
+        fig.text(0.5, 0.01, date_range, ha='center', color='#666', fontsize=8)
+        
+        fig.subplots_adjust(bottom=0.08, top=0.93, left=0.08, right=0.95)
+        fig.savefig(output_path, dpi=150, bbox_inches='tight', facecolor=fig.get_facecolor())
+        plt.close(fig)
         
         print(f"K线图已保存至: {output_path}")
         return output_path
@@ -317,13 +356,34 @@ def generate_kline_chart(df: pd.DataFrame, output_path: str = "btc_kline.png"):
 
 # ==================== 推送通知 ====================
 
-def send_wechat_notification(sendkey: str, title: str, content: str) -> bool:
-    """通过Server酱发送微信推送通知"""
+def send_wechat_notification(sendkey: str, title: str, content: str, image_path: str = None) -> bool:
+    """通过Server酱发送微信推送通知（支持图片上传）"""
     try:
+        # 上传图片到Server酱图床
+        img_url = None
+        if image_path and os.path.exists(image_path):
+            try:
+                upload_url = f"{SERVERCHAN_API}/{sendkey}/upload"
+                with open(image_path, "rb") as f:
+                    files = {"file": ("kline.png", f, "image/png")}
+                    upload_resp = requests.post(upload_url, files=files, timeout=30)
+                    if upload_resp.status_code == 200:
+                        upload_data = upload_resp.json()
+                        img_url = upload_data.get("data", {}).get("url", "")
+                        if img_url:
+                            print(f"图片上传成功: {img_url}")
+            except Exception as e:
+                print(f"图片上传失败: {e}，将仅推送文字")
+        
+        # 构建完整内容
+        full_content = content
+        if img_url:
+            full_content += f"\n\n![K线图]({img_url})"
+        
         url = f"{SERVERCHAN_API}/{sendkey}.send"
         data = {
             "title": title,
-            "desp": content
+            "desp": full_content
         }
         response = requests.post(url, data=data, timeout=10)
         result = response.json()
@@ -486,7 +546,8 @@ def main():
         print("\n📤 发送微信推送...")
         title = f"BTC监控 | ${report['price']['price']:,.0f} | {report['price']['change_percent']:+.2f}%"
         content = format_wechat_message(report)
-        send_wechat_notification(sendkey, title, content)
+        chart_path = report.get("chart_path")
+        send_wechat_notification(sendkey, title, content, image_path=chart_path)
     else:
         print("\n⚠️ 未配置Server酱SendKey，跳过微信推送")
         print("💡 如需推送，请设置环境变量 SERVERCHAN_SENDKEY")
